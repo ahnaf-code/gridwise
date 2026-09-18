@@ -1,13 +1,16 @@
 import hashlib
 import json
+import logging
 import os
+import re
 import httpx
+
+logger = logging.getLogger(__name__)
 
 class LLMUnavailable(Exception):
     """Raised when the external LLM service fails, times out, or returns malformed data."""
     pass
 
-# In-memory cache keyed by MD5 hash of operator notes JSON string
 _INTENT_CACHE: dict[str, list[dict]] = {}
 
 SYSTEM_PROMPT = """You are an expert energy management parser. You analyze natural-language operator notes for a campus energy schedule and extract structured INTENTS.
@@ -44,15 +47,18 @@ Rules:
 """
 
 def _hash_notes(notes: list[str]) -> str:
-    """Generates a unique hash key for a list of notes."""
     serialized = json.dumps(notes, sort_keys=True)
     return hashlib.md5(serialized.encode("utf-8")).hexdigest()
 
+def _clean_json_content(content: str) -> str:
+    """Strips markdown code blocks if present in LLM generation."""
+    content = content.strip()
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return content
+
 async def extract_intents(notes: list[str]) -> list[dict]:
-    """
-    Extracts structured intent dicts from operator notes using Fireworks API.
-    Handles caching, timeouts, retries, and errors without exposing sensitive API details.
-    """
     if not notes:
         return []
 
@@ -61,9 +67,14 @@ async def extract_intents(notes: list[str]) -> list[dict]:
         return _INTENT_CACHE[cache_key]
 
     api_key = os.getenv("FIREWORKS_API_KEY", "")
-    model = os.getenv("FIREWORKS_MODEL", "accounts/fireworks/models/mixtral-8x7b-instruct")
+    # Set to active, supported serverless model
+    model = os.getenv(
+        "FIREWORKS_MODEL", 
+        "accounts/fireworks/models/llama-v3p2-3b-instruct"
+    )
 
     if not api_key:
+        logger.error("FIREWORKS_API_KEY environment variable is missing.")
         raise LLMUnavailable("API key is not configured.")
 
     url = "https://api.fireworks.ai/inference/v1/chat/completions"
@@ -84,27 +95,32 @@ async def extract_intents(notes: list[str]) -> list[dict]:
     }
 
     timeout_config = httpx.Timeout(12.0)
-    attempts = 2  # Initial attempt + 1 retry
 
-    for attempt in range(attempts):
-        try:
-            async with httpx.AsyncClient(timeout=timeout_config) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                
-                data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                parsed = json.loads(content)
-                
-                directives = parsed.get("directives", [])
-                if isinstance(directives, list):
-                    _INTENT_CACHE[cache_key] = directives
-                    return directives
-                else:
-                    raise ValueError("Key 'directives' is not a list")
+    try:
+        async with httpx.AsyncClient(timeout=timeout_config) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            
+            if response.status_code != 200:
+                logger.error(
+                    f"Fireworks API HTTP {response.status_code}: {response.text}"
+                )
+                raise LLMUnavailable(f"Fireworks API returned status {response.status_code}")
 
-        except Exception:
-            if attempt == attempts - 1:
-                raise LLMUnavailable("Failed to retrieve intents from LLM provider after retry.")
-    
-    raise LLMUnavailable("Unexpected execution path in LLM intent extraction.")
+            data = response.json()
+            raw_content = data["choices"][0]["message"]["content"]
+            cleaned_content = _clean_json_content(raw_content)
+            parsed = json.loads(cleaned_content)
+            
+            directives = parsed.get("directives", [])
+            if isinstance(directives, list):
+                _INTENT_CACHE[cache_key] = directives
+                return directives
+            else:
+                raise ValueError("Key 'directives' is not a list")
+
+    except httpx.RequestError as exc:
+        logger.error(f"Network failure connecting to Fireworks AI: {exc}")
+        raise LLMUnavailable("Network error connecting to LLM service") from exc
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        logger.error(f"Failed to parse LLM response structure: {exc}")
+        raise LLMUnavailable("Malformed response from LLM service") from exc
