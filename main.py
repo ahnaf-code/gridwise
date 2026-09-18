@@ -18,6 +18,13 @@ logger = logging.getLogger("gridwise")
 app = FastAPI(title="GridWise Energy Optimization API")
 
 
+class HourModel(BaseModel):
+    hour: int
+    demand_kwh: float
+    solar_kwh: float
+    tariff_bdt_per_kwh: float
+
+
 class BatteryModel(BaseModel):
     capacity_kwh: float
     initial_energy_kwh: float
@@ -38,18 +45,16 @@ class BatteryModel(BaseModel):
 class ScenarioModel(BaseModel):
     scenario_id: str
     operator_notes: List[str]
-    demand: List[float] = Field(..., min_length=24, max_length=24)
-    solar: List[float] = Field(..., min_length=24, max_length=24)
-    tariff: List[float] = Field(..., min_length=24, max_length=24)
+    hours: List[HourModel] = Field(..., min_length=24, max_length=24)
     battery: BatteryModel
 
     def to_dataclass(self) -> Scenario:
         return Scenario(
             scenario_id=self.scenario_id,
             operator_notes=self.operator_notes,
-            demand=self.demand,
-            solar=self.solar,
-            tariff=self.tariff,
+            demand=[h.demand_kwh for h in self.hours],
+            solar=[h.solar_kwh for h in self.hours],
+            tariff=[h.tariff_bdt_per_kwh for h in self.hours],
             battery=self.battery.to_dataclass(),
         )
 
