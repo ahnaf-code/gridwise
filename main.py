@@ -9,6 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from contracts import Battery, Scenario
 from guardrails import to_directives
 from llm import LLMUnavailable, extract_intents
+from plan_summary import generate_plan_summary
 import solver
 
 logging.basicConfig(level=logging.INFO)
@@ -103,9 +104,9 @@ async def optimize_energy(payload: ScenarioModel):
             )
             baseline_sol = solver.grid_only_baseline(scenario, directives)
             plan = solver._assemble(scenario, baseline_sol)
-            summary = "Grid-only baseline strategy applied due to plan validation constraints."
+            summary = generate_plan_summary(directives, is_baseline=True)
         else:
-            summary = "Energy schedule optimized using linear programming to minimize cost while honoring all directives."
+            summary = generate_plan_summary(directives, is_baseline=False)
 
         # 5. Return schema-compliant output
         return {
