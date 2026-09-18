@@ -67,15 +67,15 @@ async def extract_intents(notes: list[str]) -> list[dict]:
         return _INTENT_CACHE[cache_key]
 
     api_key = os.getenv("FIREWORKS_API_KEY", "")
-    # Set to active, supported serverless model
-    model = os.getenv(
-        "FIREWORKS_MODEL", 
-        "accounts/fireworks/models/llama-v3p2-3b-instruct"
-    )
+    model = os.getenv("FIREWORKS_MODEL", "")
 
     if not api_key:
         logger.error("FIREWORKS_API_KEY environment variable is missing.")
         raise LLMUnavailable("API key is not configured.")
+        
+    if not model:
+        logger.error("FIREWORKS_MODEL environment variable is missing.")
+        raise LLMUnavailable("FIREWORKS_MODEL is not configured in the environment.")
 
     url = "https://api.fireworks.ai/inference/v1/chat/completions"
     headers = {
